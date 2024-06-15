@@ -19,6 +19,7 @@ from ._general import (
     shapley_coefficients,
     suppress_stderr,
 )
+from ._graph import CausalChainGraph, ChainComponent
 from ._masked_model import MaskedModel, make_masks
 from ._show_progress import show_progress
 
@@ -43,4 +44,6 @@ __all__ = [
     "MaskedModel",
     "make_masks",
     "show_progress",
+    "CausalChainGraph",
+    "ChainComponent",
 ]

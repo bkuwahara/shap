@@ -30,14 +30,13 @@ from ..utils._legacy import (
     match_instance_to_data,
     match_model_to_data,
 )
-from ..utils._graph import CausalChainGraph
 from ._explainer import Explainer
 
 log = logging.getLogger('shap')
 
 
 class KernelExplainer(Explainer):
-    """Uses the Kernel SHAP method to explain the output of any function.
+    """Uses the Kernel SHAP method to explain a function of any function's output(s).
 
     Kernel SHAP is a method that uses a special weighted linear regression
     to compute the importance of each feature. The computed importance values
@@ -68,11 +67,6 @@ class KernelExplainer(Explainer):
         supplied as a pandas.DataFrame, then ``feature_names`` can be set to ``None`` (default),
         and the feature names will be taken as the column names of the dataframe.
 
-    causal_model : CausalChainGraph
-        A causal chain graph that represents the causal relationships between features. If provided,
-        the explainer will use this graph to perform interventional distribution shifts to the
-        synthetic samples. If None, assume full feature independence.
-
     link : "identity" or "logit"
         A generalized linear model link to connect the feature importance values to the model
         output. Since the feature importance values, phi, sum up to the model output, it often makes
@@ -87,7 +81,7 @@ class KernelExplainer(Explainer):
 
     """
 
-    def __init__(self, model, data, feature_names=None, causal_model=None, link="identity",  **kwargs):
+    def __init__(self, model, data, feature_names=None, link="identity", **kwargs):
 
         if feature_names is not None:
             self.data_feature_names=feature_names
@@ -100,7 +94,6 @@ class KernelExplainer(Explainer):
         self.keep_index_ordered = kwargs.get("keep_index_ordered", False)
         self.model = convert_to_model(model, keep_index=self.keep_index)
         self.data = convert_to_data(data, keep_index=self.keep_index)
-        self.causal_model = causal_model
         model_null = match_model_to_data(self.model, self.data)
 
         # enforce our current input type limitations
@@ -185,13 +178,15 @@ class KernelExplainer(Explainer):
             compute_time=time.time() - start_time,
         )
 
-    def shap_values(self, X, **kwargs):
+    def shap_values(self, X, g, **kwargs):
         """Estimate the SHAP values for a set of samples.
 
         Parameters
         ----------
         X : numpy.array or pandas.DataFrame or any scipy.sparse matrix
             A matrix of samples (# samples x # features) on which to explain the model's output.
+
+        g: general function of the form g(model_output, *args)
 
         nsamples : "auto" or int
             Number of times to re-evaluate the model when explaining each prediction. More samples
@@ -300,7 +295,7 @@ class KernelExplainer(Explainer):
             emsg = "Instance must have 1 or 2 dimensions!"
             raise DimensionError(emsg)
 
-    def explain(self, incoming_instance, **kwargs):
+    def explain(self, incoming_instance, g, **kwargs):
         # convert incoming input to a standardized iml object
         instance = convert_to_instance(incoming_instance)
         match_instance_to_data(instance, self.data)
@@ -322,7 +317,7 @@ class KernelExplainer(Explainer):
                 if self.varyingFeatureGroups.shape[1] == 1:
                     self.varyingFeatureGroups = self.varyingFeatureGroups.flatten()
 
-        # find f(x)
+        # *** CHANGE THIS TO GENERAL FUNCTION g(*) 
         if self.keep_index:
             model_out = self.model.f(instance.convert_to_df())
         else:
@@ -368,7 +363,7 @@ class KernelExplainer(Explainer):
             # reserve space for some of our computations
             self.allocate()
 
-            # weight the different subset sizes
+            # weight the different subset sizes (treats C(n,k) and C(n,n-k) as the same size)
             num_subset_sizes = int(np.ceil((self.M - 1) / 2.0))
             num_paired_subset_sizes = int(np.floor((self.M - 1) / 2.0))
             weight_vector = np.array([(self.M - 1.0) / (i * (self.M - i)) for i in range(1, num_subset_sizes + 1)])
@@ -381,7 +376,7 @@ class KernelExplainer(Explainer):
 
             # fill out all the subset sizes we can completely enumerate
             # given nsamples*remaining_weight_vector[subset_size]
-            num_full_subsets = 0 # the number of subset sizes we completely enumerate
+            num_full_subsets = 0
             num_samples_left = self.nsamples
             group_inds = np.arange(self.M, dtype='int64')
             mask = np.zeros(self.M)
@@ -419,7 +414,7 @@ class KernelExplainer(Explainer):
                     for inds in itertools.combinations(group_inds, subset_size):
                         mask[:] = 0.0
                         mask[np.array(inds, dtype='int64')] = 1.0
-                        self.addsample(instance.x, mask, w)
+                        self.addsample(instance.x, mask, w) # *** Modify this part to sample properly for g
                         if subset_size <= num_paired_subset_sizes:
                             mask[:] = np.abs(mask - 1)
                             self.addsample(instance.x, mask, w)
@@ -456,7 +451,7 @@ class KernelExplainer(Explainer):
                         new_sample = True
                         used_masks[mask_tuple] = self.nsamplesAdded
                         samples_left -= 1
-                        self.addsample(instance.x, mask, 1.0)
+                        self.addsample(instance.x, mask, 1.0) # *** Change this in accordance with previous
                     else:
                         self.kernelWeights[used_masks[mask_tuple]] += 1.0
 
@@ -468,7 +463,7 @@ class KernelExplainer(Explainer):
                         # increment a previous sample's weight
                         if new_sample:
                             samples_left -= 1
-                            self.addsample(instance.x, mask, 1.0)
+                            self.addsample(instance.x, mask, 1.0) # ** also this one
                         else:
                             # we know the compliment sample is the next one after the original sample, so + 1
                             self.kernelWeights[used_masks[mask_tuple] + 1] += 1.0
@@ -584,10 +579,6 @@ class KernelExplainer(Explainer):
             self.synth_data_index = np.tile(self.data.index_value, self.nsamples)
 
     def addsample(self, x, m, w):
-        if self.causal_model is not None:
-            m = m.astype(bool)
-            self.causal_model.interventional_distribution(m, x) 
-
         offset = self.nsamplesAdded * self.N
         if isinstance(self.varyingFeatureGroups, (list,)):
             for j in range(self.M):
@@ -623,7 +614,7 @@ class KernelExplainer(Explainer):
             data = pd.concat([index, data], axis=1).set_index(self.data.index_name)
             if self.keep_index_ordered:
                 data = data.sort_index()
-        modelOut = self.model.f(data)
+        modelOut = self.model.f(data) # Modify this part for g(*)
         if isinstance(modelOut, (pd.DataFrame, pd.Series)):
             modelOut = modelOut.values
         elif safe_isinstance(modelOut, "tensorflow.python.framework.ops.SymbolicTensor"):

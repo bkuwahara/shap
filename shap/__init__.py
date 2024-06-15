@@ -87,7 +87,7 @@ else:
 # other stuff :)
 from . import datasets, links, utils  # noqa: E402
 from .actions._optimizer import ActionOptimizer  # noqa: E402
-from .utils import approximate_interactions, sample  # noqa: E402
+from .utils import approximate_interactions, sample, CausalChainGraph, ChainComponent  # noqa: E402
 
 #from . import benchmark
 from .utils._legacy import kmeans  # noqa: E402
@@ -141,4 +141,6 @@ __all__ = [
     "approximate_interactions",
     "sample",
     "kmeans",
+    "CausalChainGraph",
+    "ChainComponent",
 ]
