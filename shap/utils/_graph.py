@@ -2,6 +2,52 @@ import networkx as nx
 import numpy as np
 
 
+def nan_cov(mat):
+    """
+    Compute the covariance matrix of the given matrix, ignoring NaNs.
+    """
+    # Get the number of variables
+    n_vars = mat.shape[1]
+    
+    # Initialize covariance matrix
+    cov_matrix = np.empty((n_vars, n_vars))
+    
+    # Iterate over each pair of variables to calculate covariance
+    for i in range(n_vars):
+        for j in range(i):
+            # Extract the valid data (non-NaN) for the variable pair
+            valid_data_i = mat[:, i][~np.isnan(mat[:, i])]
+            valid_data_j = mat[:, j][~np.isnan(mat[:, j])]
+            
+            # Find common valid indices
+            valid_mask = ~np.isnan(mat[:, i]) & ~np.isnan(mat[:, j])
+            valid_data_i = mat[:, i][valid_mask]
+            valid_data_j = mat[:, j][valid_mask]
+            
+            # Compute covariance for the pair
+            if len(valid_data_i) > 1 and len(valid_data_j) > 1:
+                cov_matrix[i, j] = np.cov(valid_data_i, valid_data_j, ddof=1)[0, 1]
+                cov_matrix[j, i] = np.cov(valid_data_i, valid_data_j, ddof=1)[0, 1]
+            else:
+                cov_matrix[i, j] = np.nan  # Not enough data to compute covariance
+                cov_matrix[j, i] = np.nan
+    for i in range(n_vars):
+        cov_matrix[i, i] = np.nanvar(mat[:, i], ddof=1)
+
+    return cov_matrix
+
+# Example data with NaNs
+data = np.array([[1.0, 2.0, np.nan],
+                 [4.0, np.nan, 6.0],
+                 [7.0, 8.0, 9.0]])
+
+# Calculate covariance matrix while disregarding NaNs
+cov_matrix = nan_cov(data)
+
+print(cov_matrix)
+
+
+
 class FeatureSet:
     """Simple implementation of a set using Boolean numpy arrays
 
@@ -90,8 +136,7 @@ class CausalChainGraph:
 
     
     def __init__(self, components, edges, dataset):        
-        self.dataset = dataset
-        self._mean = dataset.mean(axis=0)
+        self._mean = np.nanmean(dataset, axis=0)
         self._cov = np.cov(dataset, rowvar=False)
         self.components = components
 
@@ -108,7 +153,7 @@ class CausalChainGraph:
 
 
     def _check_validity(self):
-        covered = FeatureSet(np.zeros(self.dataset.shape[1]))
+        covered = FeatureSet(np.zeros_like(self.mean))
         for component in self.components:
             if covered.intersection(component.features).any():
                 raise ValueError("Components must be disjoint")
@@ -119,7 +164,7 @@ class CausalChainGraph:
         order = []
         predecessors = {}
         for node in nx.topological_sort(self.graph):
-            parent_set = FeatureSet.from_set(set(), self.dataset.shape[1])
+            parent_set = FeatureSet(np.zeros_like(self.mean))
             for parent in self.graph.predecessors(node):
                 parent_set = parent_set.union(parent.features)
             predecessors[node] = parent_set
