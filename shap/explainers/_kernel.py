@@ -585,7 +585,6 @@ class KernelExplainer(Explainer):
 
     def addsample(self, x, m, w):
         if self.causal_model is not None:
-            m = m.astype(bool)
             self.causal_model.interventional_distribution(m, x) 
 
         offset = self.nsamplesAdded * self.N
