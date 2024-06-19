@@ -177,7 +177,7 @@ class GraphKernelExplainer(Explainer):
             A matrix of samples (# samples x # features) on which to explain the model's output.
 
         n_subset_sizes : "auto" or int
-            Number of times to re-evaluate the model when explaining each prediction. More samples
+            Number of subsets to sample when explaining each prediction. More samples
             lead to lower variance estimates of the SHAP values. The "auto" setting uses
             `n_subset_sizes = 2 * X.shape[1] + 2048`.
 
