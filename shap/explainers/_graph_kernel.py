@@ -63,6 +63,14 @@ class GraphKernelExplainer(Explainer):
         Note: for the sparse case, we accept any sparse matrix but convert to lil format for
         performance.
 
+    components : list of ChainComponent
+        List of components in the causal chain graph. Each component is a set of features that are
+        grouped together and have the same causal relationships with other components. 
+
+    edges : list of tuples of ChainComponent
+        List of directed edges in the causal chain graph, where an edge from component x to component y
+        indicates that x causally precedes y.
+
     feature_names : list
         The names of the features in the background dataset. If the background dataset is
         supplied as a pandas.DataFrame, then ``feature_names`` can be set to ``None`` (default),
@@ -87,10 +95,12 @@ class GraphKernelExplainer(Explainer):
 
     """
 
-    def __init__(self, model, data, causal_graph, feature_names=None, link="identity",  **kwargs):
+    def __init__(self, model, data, components, edges, feature_names=None, link="identity",  **kwargs):
 
         if feature_names is not None:
             self.data_feature_names=feature_names
+
+        causal_graph = CausalChainGraph(components, edges, data)
 
         # convert incoming inputs to standardized iml objects
         self.link = convert_to_link(link)
