@@ -14,6 +14,7 @@ from .explainers._partition import PartitionExplainer
 from .explainers._permutation import PermutationExplainer
 from .explainers._sampling import SamplingExplainer
 from .explainers._tree import TreeExplainer
+from .explainers._graph_kernel import GraphKernelExplainer
 
 try:
     # Version from setuptools-scm
@@ -111,6 +112,7 @@ __all__ = [
     "PermutationExplainer",
     "SamplingExplainer",
     "TreeExplainer",
+    "GraphKernelExplainer",
 
     # Plots
     "plots",

@@ -9,6 +9,7 @@ from ._partition import PartitionExplainer
 from ._permutation import PermutationExplainer
 from ._sampling import SamplingExplainer
 from ._tree import TreeExplainer
+from ._graph_kernel import GraphKernelExplainer
 
 # Alternative legacy "short-form" aliases, which are kept here for backwards-compatibility
 Additive = AdditiveExplainer
@@ -35,4 +36,5 @@ __all__ = [
     "PermutationExplainer",
     "SamplingExplainer",
     "TreeExplainer",
+    "GraphKernelExplainer"
 ]

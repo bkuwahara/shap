@@ -36,16 +36,6 @@ def nan_cov(mat):
 
     return cov_matrix
 
-# Example data with NaNs
-data = np.array([[1.0, 2.0, np.nan],
-                 [4.0, np.nan, 6.0],
-                 [7.0, 8.0, 9.0]])
-
-# Calculate covariance matrix while disregarding NaNs
-cov_matrix = nan_cov(data)
-
-print(cov_matrix)
-
 
 
 class FeatureSet:
@@ -153,7 +143,7 @@ class CausalChainGraph:
 
 
     def _check_validity(self):
-        covered = FeatureSet(np.zeros_like(self.mean))
+        covered = FeatureSet(np.zeros_like(self._mean))
         for component in self.components:
             if covered.intersection(component.features).any():
                 raise ValueError("Components must be disjoint")
@@ -164,7 +154,7 @@ class CausalChainGraph:
         order = []
         predecessors = {}
         for node in nx.topological_sort(self.graph):
-            parent_set = FeatureSet(np.zeros_like(self.mean))
+            parent_set = FeatureSet(np.zeros_like(self._mean))
             for parent in self.graph.predecessors(node):
                 parent_set = parent_set.union(parent.features)
             predecessors[node] = parent_set
@@ -172,7 +162,7 @@ class CausalChainGraph:
         return order, predecessors
 
 
-    def interventional_distribution(self, S, x):
+    def interventional_distribution(self, S, x, nsamples=1):
         """Draw samples from the interventional distribution P(X_S' | do(X_S=x_S))
         Mutates the input x to reflect the intervened values
 
@@ -183,23 +173,25 @@ class CausalChainGraph:
         x_fixed : np.array
             Values of the intervened features
         """
+        samples = np.repeat(x.reshape(1, -1), nsamples, axis=0)
         if isinstance(S, np.ndarray):
             S = FeatureSet(S)
 
         T = self._vars - S
 
         # Traverse nodes in topological (causal) order
-        for node in self.order:
-            dist = (self._confounding_distribution(node, self._parents[node], S, x) if node.confounding 
-                    else self._non_confounding_distribution(node, self._parents[node], S, x))
-            
-            # Check if the distribution is undefined (i.e. the node's features are all in S, so are predefined)
-            if dist is None:
-                continue
-            mu, Sigma = dist
-            # Sample from the distribution and update x with the sampled features
-            x[:,T.intersection(node.features).features] = np.random.multivariate_normal(mu, Sigma)
-        return x
+        for i in range(nsamples):
+            for node in self.order:
+                dist = (self._confounding_distribution(node, self._parents[node], S, samples[i:i+1,:]) if node.confounding 
+                        else self._non_confounding_distribution(node, self._parents[node], S, samples[i:i+1,:]))
+                
+                # Check if the distribution is undefined (i.e. the node's features are all in S, so are predefined)
+                if dist is None:
+                    continue
+                mu, Sigma = dist
+                # Sample from the distribution and update x with the sampled features
+                samples[i:i+1,T.intersection(node.features).features] = np.random.multivariate_normal(mu, Sigma)
+        return samples
 
 
 
