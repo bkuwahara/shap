@@ -68,11 +68,6 @@ class KernelExplainer(Explainer):
         supplied as a pandas.DataFrame, then ``feature_names`` can be set to ``None`` (default),
         and the feature names will be taken as the column names of the dataframe.
 
-    causal_model : CausalChainGraph
-        A causal chain graph that represents the causal relationships between features. If provided,
-        the explainer will use this graph to perform interventional distribution shifts to the
-        synthetic samples. If None, assume full feature independence.
-
     link : "identity" or "logit"
         A generalized linear model link to connect the feature importance values to the model
         output. Since the feature importance values, phi, sum up to the model output, it often makes
@@ -87,7 +82,7 @@ class KernelExplainer(Explainer):
 
     """
 
-    def __init__(self, model, data, feature_names=None, causal_model=None, link="identity",  **kwargs):
+    def __init__(self, model, data, feature_names=None, link="identity",  **kwargs):
 
         if feature_names is not None:
             self.data_feature_names=feature_names
@@ -100,7 +95,6 @@ class KernelExplainer(Explainer):
         self.keep_index_ordered = kwargs.get("keep_index_ordered", False)
         self.model = convert_to_model(model, keep_index=self.keep_index)
         self.data = convert_to_data(data, keep_index=self.keep_index)
-        self.causal_model = causal_model
         model_null = match_model_to_data(self.model, self.data)
 
         # enforce our current input type limitations
@@ -584,8 +578,6 @@ class KernelExplainer(Explainer):
             self.synth_data_index = np.tile(self.data.index_value, self.nsamples)
 
     def addsample(self, x, m, w):
-        if self.causal_model is not None:
-            self.causal_model.interventional_distribution(m, x) 
 
         offset = self.nsamplesAdded * self.N
         if isinstance(self.varyingFeatureGroups, (list,)):
