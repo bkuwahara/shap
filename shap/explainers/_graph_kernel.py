@@ -201,7 +201,6 @@ class GraphKernelExplainer(Explainer):
             Pass this value explicitly to silence the DeprecationWarning.
 
         
-
         silent: bool
             If True, hide tqdm progress bar. Default False.
 
@@ -337,7 +336,7 @@ class GraphKernelExplainer(Explainer):
                     self.n_subset_sizes = self.max_samples
 
             # reserve space for some of our computations
-            self.allocate()
+            self.allocate(instance.x)
 
             # weight the different subset sizes
             num_subset_sizes = int(np.ceil((self.M - 1) / 2.0))
@@ -355,7 +354,7 @@ class GraphKernelExplainer(Explainer):
             num_full_subsets = 0 # the number of subset sizes we completely enumerate
             num_samples_left = self.n_subset_sizes
             group_inds = np.arange(self.M, dtype='int64')
-            mask = np.zeros(self.M)
+            mask = np.zeros(self.M).astype('bool')
             remaining_weight_vector = copy.copy(weight_vector)
             for subset_size in range(1, num_subset_sizes + 1):
 
@@ -388,12 +387,12 @@ class GraphKernelExplainer(Explainer):
                     if subset_size <= num_paired_subset_sizes:
                         w /= 2.0
                     for inds in itertools.combinations(group_inds, subset_size):
-                        mask[:] = 0.0
-                        mask[np.array(inds, dtype='int64')] = 1.0
-                        self.addsample(instance.x, mask, w)
+                        mask[:] = False
+                        mask[np.array(inds, dtype='int64')] = True
+                        self.addsample(mask, w)
                         if subset_size <= num_paired_subset_sizes:
-                            mask[:] = np.abs(mask - 1)
-                            self.addsample(instance.x, mask, w)
+                            mask[:] = np.logical_not(mask)
+                            self.addsample(mask, w)
                 else:
                     break
             log.info(f"{num_full_subsets = }")
@@ -415,11 +414,11 @@ class GraphKernelExplainer(Explainer):
                 ind_set_pos = 0
                 used_masks = {}
                 while samples_left > 0 and ind_set_pos < len(ind_set):
-                    mask.fill(0.0)
+                    mask.fill(False)
                     ind = ind_set[ind_set_pos] # we call np.random.choice once to save time and then just read it here
                     ind_set_pos += 1
                     subset_size = ind + num_full_subsets + 1
-                    mask[np.random.permutation(self.M)[:subset_size]] = 1.0
+                    mask[np.random.permutation(self.M)[:subset_size]] = True
 
                     # only add the sample if we have not seen it before, otherwise just
                     # increment a previous sample's weight
@@ -429,19 +428,19 @@ class GraphKernelExplainer(Explainer):
                         new_sample = True
                         used_masks[mask_tuple] = self.n_sizes_added
                         samples_left -= 1
-                        self.addsample(instance.x, mask, 1.0)
+                        self.addsample(mask, 1.0)
                     else:
                         self.kernelWeights[used_masks[mask_tuple]] += 1.0
 
                     # add the compliment sample
                     if samples_left > 0 and subset_size <= num_paired_subset_sizes:
-                        mask[:] = np.abs(mask - 1)
+                        mask[:] = np.logical_not(mask)
 
                         # only add the sample if we have not seen it before, otherwise just
                         # increment a previous sample's weight
                         if new_sample:
                             samples_left -= 1
-                            self.addsample(instance.x, mask, 1.0)
+                            self.addsample(mask, 1.0)
                         else:
                             # we know the compliment sample is the next one after the original sample, so + 1
                             self.kernelWeights[used_masks[mask_tuple] + 1] += 1.0
@@ -518,7 +517,7 @@ class GraphKernelExplainer(Explainer):
             varying_indices = varying_indices[mask]
             return varying_indices
 
-    def allocate(self):
+    def allocate(self, instance):
         # if scipy.sparse.issparse(self.data.data):
         #     # We tile the sparse matrix in csr format but convert it to lil
         #     # for performance when adding samples
@@ -546,7 +545,7 @@ class GraphKernelExplainer(Explainer):
         # else:
         #     self.synth_data = np.tile(self.data.data, (self.n_subset_sizes, 1))
 
-        self.synth_data = np.empty((self.samples_per_subset * self.n_subset_sizes, self.M))
+        self.synth_data = np.repeat(instance, self.samples_per_subset * self.n_subset_sizes, axis=0)
         self.maskMatrix = np.zeros((self.n_subset_sizes, self.M))
         self.kernelWeights = np.zeros(self.n_subset_sizes)
         self.y = np.zeros((self.n_subset_sizes * self.samples_per_subset, self.D))
@@ -556,11 +555,11 @@ class GraphKernelExplainer(Explainer):
         self.n_sizes_run = 0
 
 
-    def addsample(self, x, m, w):
-        
-        samples = self.causal_model.interventional_distribution(m, x, self.samples_per_subset) 
-
+    def addsample(self, m, w):
         offset = self.n_sizes_added * self.samples_per_subset
+        x = self.synth_data[offset:offset+self.samples_per_subset, :]
+        self.causal_model.interventional_distribution(m, x, self.samples_per_subset, in_place=True) 
+
         # if isinstance(self.varyingFeatureGroups, (list,)):
         #     for j in range(self.M):
         #         for k in self.varyingFeatureGroups[j]:
@@ -579,7 +578,6 @@ class GraphKernelExplainer(Explainer):
         # is all sparse, make evaluation data dense
         # if scipy.sparse.issparse(x) and not scipy.sparse.issparse(self.synth_data):
         #     evaluation_data = evaluation_data.toarray()
-        self.synth_data[offset:offset+self.samples_per_subset, :] = samples
         self.maskMatrix[self.n_sizes_added, :] = m
         self.kernelWeights[self.n_sizes_added] = w
         self.n_sizes_added += 1

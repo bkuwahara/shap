@@ -80,20 +80,16 @@ class ChainComponent:
 
     Parameters
     ----------
-    features : FeatureSet
+    features : np.ndarray[bool]
         Set of features in the component
     confounding : bool (default=False)
         Whether the features in the component are confounded by unobserved variables
     """
     def from_set(features, M, confounding=False, name=None):
-        return ChainComponent(FeatureSet.from_set(features, M), confounding=confounding, name=name)
+        S = np.array([1 if f in features else 0 for f in range(M)]).astype(bool)
+        return ChainComponent(S, confounding=confounding, name=name)
 
     def __init__(self, features, confounding=False, name=None):
-        if isinstance(features, np.ndarray):
-            features = FeatureSet(features)
-        elif isinstance(features, set):
-            features = FeatureSet.from_set(features, len(features))
-
         self.features = features
         self.confounding = confounding
         self.name = name
@@ -125,7 +121,9 @@ class CausalChainGraph:
     """
 
     
-    def __init__(self, components, edges, dataset):        
+    def __init__(self, components, edges, dataset):       
+
+
         self._mean = np.nanmean(dataset, axis=0)
         self._cov = np.cov(dataset, rowvar=False)
         self.components = components
@@ -137,61 +135,70 @@ class CausalChainGraph:
         self._confounding_components = [c for c in components if c.confounding]
         self._non_confounding_components = [c for c in components if not c.confounding]
 
-        self._vars = FeatureSet(np.ones(dataset.shape[1]))
+        self._vars = np.ones(dataset.shape[1]).astype(bool)
 
         self.order, self._parents = self._generate_traversal_order()
+        self._isolated_components = [c for c in self.components if self.graph.in_degree(c) == 0 and self.graph.out_degree(c) == 0]
 
 
     def _check_validity(self):
-        covered = FeatureSet(np.zeros_like(self._mean))
+        covered = np.zeros_like(self._mean).astype(bool)
         for component in self.components:
-            if covered.intersection(component.features).any():
+            if (covered * (component.features)).any():
                 raise ValueError("Components must be disjoint")
-            covered = covered.union(component.features)
+            covered = np.logical_or(covered, component.features)
             
 
     def _generate_traversal_order(self):
         order = []
         predecessors = {}
         for node in nx.topological_sort(self.graph):
-            parent_set = FeatureSet(np.zeros_like(self._mean))
+            parent_set = np.zeros_like(self._mean).astype(bool)
             for parent in self.graph.predecessors(node):
-                parent_set = parent_set.union(parent.features)
+                parent_set = np.logical_or(parent_set, parent.features)
             predecessors[node] = parent_set
             order.append(node)
         return order, predecessors
 
 
-    def interventional_distribution(self, S, x, nsamples=1):
+    def interventional_distribution(self, S, x, nsamples=1, in_place=False):
         """Draw samples from the interventional distribution P(X_S' | do(X_S=x_S))
         Mutates the input x to reflect the intervened values
 
         Parameters
         ----------
-        S : FeatureSet
+        S : np.ndarray[bool]
             Set of features to intervene on
         x_fixed : np.array
             Values of the intervened features
+        nsamples : int (default=1)
+            Number of samples to draw. If in_place, uses x.shape[0] as the number of samples
+        in_place : bool (default=False)
+            Whether to mutate the input x or return a new array
         """
-        samples = np.repeat(x.reshape(1, -1), nsamples, axis=0)
-        if isinstance(S, np.ndarray):
-            S = FeatureSet(S)
 
-        T = self._vars - S
+        if not in_place:
+            x = np.repeat(x.reshape(1, -1), nsamples, axis=0)
+        else:
+            nsamples = x.shape[0]
+
+        T = np.logical_xor(self._vars, S)
 
         # Traverse nodes in topological (causal) order
         for i in range(nsamples):
             for node in self.order:
-                dist = (self._confounding_distribution(node, self._parents[node], S, samples[i:i+1,:]) if node.confounding 
-                        else self._non_confounding_distribution(node, self._parents[node], S, samples[i:i+1,:]))
+                dist = (self._confounding_distribution(node, self._parents[node], S, x[i:i+1,:]) if node.confounding 
+                        else self._non_confounding_distribution(node, self._parents[node], S, x[i:i+1,:]))
                 
                 # Check if the distribution is undefined (i.e. the node's features are all in S, so are predefined)
                 if dist is None:
                     continue
                 mu, Sigma = dist
+
                 # Sample from the distribution and update x with the sampled features
-                samples[i:i+1,T.intersection(node.features).features] = np.random.multivariate_normal(mu, Sigma)
-        return samples
+                
+                x[i:i+1,T*node.features] = np.random.multivariate_normal(mu, Sigma)
+        return x
 
 
 
@@ -204,22 +211,22 @@ class CausalChainGraph:
         ----------
         node : ChainComponent
             Node in the causal chain graph
-        parents : FeatureSet
+        parents : np.ndarray[bool]
             Set of parents of the node
-        S : FeatureSet
+        S : np.ndarray[bool]
             Set of intervened features
         x : np.array    
             Values of the features conditioned on
         """
-        Sbar = self._vars - S
-        T = node.features.intersection(Sbar)
+        Sbar = np.logical_xor(self._vars, S)
+        T = node.features * Sbar
 
         # If the node's features are all in S, the distribution is pre-specified by the intervention
         if not T.any():
             return None
 
         # If the node has no parents, the distribution is simply the marginal distribution
-        if not parents:
+        if not parents.any():
             mu = self._mean[T.features]
             Sigma = self._cov[T.features][:, T.features]
             return mu, Sigma
@@ -237,21 +244,21 @@ class CausalChainGraph:
         ----------
         node : ChainComponent
             Node in the causal chain graph
-        parents : FeatureSet
+        parents : np.ndarray[bool]
             Set of parents of the node
-        S : FeatureSet
+        S : np.ndarray[bool]
             Set of intervened features
         x : np.array    
             Values of the features conditioned on
         """
-        Sbar = self._vars - S
-        T = node.features.intersection(Sbar)
+        Sbar = np.logical_xor(self._vars, S)
+        T = node.features * Sbar
         if not T.any():
             return None
         
-        tau_S = node.features.intersection(S)
+        tau_S = node.features * S
 
-        mu, Sigma = self.conditional_distribution(parents.union(tau_S), T, x)
+        mu, Sigma = self.conditional_distribution(np.logical_or(parents, tau_S), T, x)
         return mu, Sigma
     
 
@@ -260,21 +267,19 @@ class CausalChainGraph:
 
         Parameters
         ----------
-        S : FeatureSet
+        S : np.ndarray[bool]
             Set of conditioning features
-        T : FeatureSet
+        T : np.ndarray[bool]
             Set of features conditioned on
         x : np.array
             Values of the features conditioned on
         """
-        Sf = S.features
-        Tf = T.features
-        x_S = x[:,Sf]
-        mu_S = self._mean[Sf]
-        mu_T = self._mean[Tf]
-        cov_SS = self._cov[Sf][:, Sf]
-        cov_TS = self._cov[Tf][:, Sf]
-        cov_TT = self._cov[Tf][:, Tf]
+        x_S = x[:,S]
+        mu_S = self._mean[S]
+        mu_T = self._mean[T]
+        cov_SS = self._cov[S][:, S]
+        cov_TS = self._cov[T][:, S]
+        cov_TT = self._cov[T][:, T]
 
         mu_T_given_S = mu_T + (cov_TS @ np.linalg.inv(cov_SS) @ ((x_S - mu_S).reshape(-1, 1))).reshape(-1)
         cov_T_given_S = cov_TT - cov_TS @ np.linalg.inv(cov_SS) @ cov_TS.T
