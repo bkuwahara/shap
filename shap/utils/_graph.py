@@ -227,8 +227,8 @@ class CausalChainGraph:
 
         # If the node has no parents, the distribution is simply the marginal distribution
         if not parents.any():
-            mu = self._mean[T.features]
-            Sigma = self._cov[T.features][:, T.features]
+            mu = self._mean[T]
+            Sigma = self._cov[T][:, T]
             return mu, Sigma
         
         mu, Sigma = self.conditional_distribution(parents, T, x)

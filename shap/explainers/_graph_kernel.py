@@ -33,6 +33,11 @@ from ..utils._legacy import (
 from ..utils._graph import CausalChainGraph
 from ._explainer import Explainer
 
+
+import cProfile
+import pstats
+import io
+
 log = logging.getLogger('shap')
 
 
@@ -275,27 +280,12 @@ class GraphKernelExplainer(Explainer):
             raise DimensionError(emsg)
 
     def explain(self, incoming_instance, **kwargs):
+
         # convert incoming input to a standardized iml object
         instance = convert_to_instance(incoming_instance)
         match_instance_to_data(instance, self.data)
 
-        # find the feature groups we will test. If a feature does not change from its
-        # current value then we know it doesn't impact the model
-        self.varyingInds = self.varying_groups(instance.x)
-        if self.data.groups is None:
-            self.varyingFeatureGroups = np.array([i for i in self.varyingInds])
-            self.M = self.varyingFeatureGroups.shape[0]
-        else:
-            self.varyingFeatureGroups = [self.data.groups[i] for i in self.varyingInds]
-            self.M = len(self.varyingFeatureGroups)
-            groups = self.data.groups
-            # convert to numpy array as it is much faster if not jagged array (all groups of same length)
-            if self.varyingFeatureGroups and all(len(groups[i]) == len(groups[0]) for i in self.varyingInds):
-                self.varyingFeatureGroups = np.array(self.varyingFeatureGroups)
-                # further performance optimization in case each group has a single value
-                if self.varyingFeatureGroups.shape[1] == 1:
-                    self.varyingFeatureGroups = self.varyingFeatureGroups.flatten()
-
+    
         # find f(x)
         model_out = self.model.f(instance.x)
         self.fx = model_out[0]
@@ -308,13 +298,6 @@ class GraphKernelExplainer(Explainer):
             phi = np.zeros((self.data.groups_size, self.D))
             phi_var = np.zeros((self.data.groups_size, self.D))
 
-        # if only one feature varies then it has all the effect
-        elif self.M == 1:
-            phi = np.zeros((self.data.groups_size, self.D))
-            phi_var = np.zeros((self.data.groups_size, self.D))
-            diff = self.link.f(self.fx) - self.link.f(self.fnull)
-            for d in range(self.D):
-                phi[self.varyingInds[0],d] = diff[d]
 
         # if more than one feature varies then we have to do real work
         else:
@@ -459,8 +442,8 @@ class GraphKernelExplainer(Explainer):
             phi_var = np.zeros((self.data.groups_size, self.D))
             for d in range(self.D):
                 vphi, vphi_var = self.solve(self.n_subset_sizes / self.max_samples, d)
-                phi[self.varyingInds, d] = vphi
-                phi_var[self.varyingInds, d] = vphi_var
+                phi[:, d] = vphi
+                phi_var[:, d] = vphi_var
 
         if not self.vector_out:
             phi = np.squeeze(phi, axis=1)
@@ -475,47 +458,6 @@ class GraphKernelExplainer(Explainer):
             return 0 if np.isclose(i, j, equal_nan=True) else 1
         else:
             return 0 if i == j else 1
-
-    def varying_groups(self, x):
-        if not scipy.sparse.issparse(x):
-            varying = np.zeros(self.data.groups_size)
-            for i in range(self.data.groups_size):
-                inds = self.data.groups[i]
-                x_group = x[0, inds]
-                if scipy.sparse.issparse(x_group):
-                    if all(j not in x.nonzero()[1] for j in inds):
-                        varying[i] = False
-                        continue
-                    x_group = x_group.todense()
-                num_mismatches = np.sum(np.frompyfunc(self.not_equal, 2, 1)(x_group, self.data.data[:, inds]))
-                varying[i] = num_mismatches > 0
-            varying_indices = np.nonzero(varying)[0]
-            return varying_indices
-        else:
-            varying_indices = []
-            # go over all nonzero columns in background and evaluation data
-            # if both background and evaluation are zero, the column does not vary
-            varying_indices = np.unique(np.union1d(self.data.data.nonzero()[1], x.nonzero()[1]))
-            remove_unvarying_indices = []
-            for i in range(len(varying_indices)):
-                varying_index = varying_indices[i]
-                # now verify the nonzero values do vary
-                data_rows = self.data.data[:, [varying_index]]
-                nonzero_rows = data_rows.nonzero()[0]
-
-                if nonzero_rows.size > 0:
-                    background_data_rows = data_rows[nonzero_rows]
-                    if scipy.sparse.issparse(background_data_rows):
-                        background_data_rows = background_data_rows.toarray()
-                    num_mismatches = np.sum(np.abs(background_data_rows - x[0, varying_index]) > 1e-7)
-                    # Note: If feature column non-zero but some background zero, can't remove index
-                    if num_mismatches == 0 and not \
-                        (np.abs(x[0, [varying_index]][0, 0]) > 1e-7 and len(nonzero_rows) < data_rows.shape[0]):
-                        remove_unvarying_indices.append(i)
-            mask = np.ones(len(varying_indices), dtype=bool)
-            mask[remove_unvarying_indices] = False
-            varying_indices = varying_indices[mask]
-            return varying_indices
 
     def allocate(self, instance):
         # if scipy.sparse.issparse(self.data.data):
