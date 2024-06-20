@@ -130,7 +130,7 @@ class GraphKernelExplainer(Explainer):
 
         # init our parameters
         self.N = self.data.data.shape[0]
-        self.P = self.data.data.shape[1]
+        self.M = self.data.data.shape[1]
         self.linkfv = np.vectorize(self.link.f)
         self.n_sizes_added = 0
         self.n_sizes_run = 0
