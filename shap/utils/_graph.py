@@ -52,6 +52,16 @@ class ChainComponent:
         S = np.array([1 if f in features else 0 for f in range(M)]).astype(bool)
         return ChainComponent(S, confounding=confounding, name=name)
 
+
+    def from_feature_name_list(names_to_include, names_list, confounding=False, group_name=None):
+        features = np.zeros(len(names_list)).astype(bool)
+        for i in range(len(names_list)):
+            for name_to_include in names_to_include:
+                if name_to_include in names_list[i]:
+                    features[i] = 1
+        return ChainComponent(features, confounding=confounding, name=group_name)
+    
+
     def __init__(self, features, confounding=False, name=None):
         self.features = features
         self.confounding = confounding
@@ -67,6 +77,8 @@ class ChainComponent:
     
     def __str__(self) -> str:
         return str(self.name)
+    
+
     
 
 class CausalChainGraph:
@@ -221,3 +233,13 @@ class CausalChainGraph:
 
         return mu_T_given_S, cov_T_given_S
     
+
+    def save(self, filename):
+        """Save the graph to a file
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file to save the graph to
+        """
+        nx.write_gpickle(self.graph, filename)
