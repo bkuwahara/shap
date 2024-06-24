@@ -1,6 +1,6 @@
 import networkx as nx
 import numpy as np
-
+from scipy.linalg import lu_factor, lu_solve
 
 def nan_cov(mat):
     """
@@ -36,43 +36,6 @@ def nan_cov(mat):
 
     return cov_matrix
 
-
-
-class FeatureSet:
-    """Simple implementation of a set using Boolean numpy arrays
-
-    Parameters
-    ----------
-    features : np.array
-        Boolean array representing the set of features present in the set
-    """
-
-    def __init__(self, features):
-        self.features = features.astype(bool)
-
-    
-    def intersection(self, other):
-        return FeatureSet(self.features * other.features)
-
-
-    def union(self, other):
-        return FeatureSet(np.bitwise_or(self.features, other.features))
-    
-
-    def __sub__(self, other):
-        return FeatureSet(np.bitwise_xor(self.features, other.features))
-    
-    def any(self):
-        return self.features.any()
-    
-    def from_set(features, M):
-        return FeatureSet(np.array([1 if f in features else 0 for f in range(M)]))
-    
-    def __str__(self) -> str:
-        return str(self.features)
-    
-    def __len__(self) -> int:
-        return len(self.features)
 
 
 class ChainComponent:
@@ -123,7 +86,7 @@ class CausalChainGraph:
     
     def __init__(self, components, edges, dataset):       
 
-
+        self.dataset = dataset
         self._mean = np.nanmean(dataset, axis=0)
         self._cov = np.cov(dataset, rowvar=False)
         self.components = components
@@ -138,7 +101,15 @@ class CausalChainGraph:
         self._vars = np.ones(dataset.shape[1]).astype(bool)
 
         self.order, self._parents = self._generate_traversal_order()
-        self._isolated_components = [c for c in self.components if self.graph.in_degree(c) == 0 and self.graph.out_degree(c) == 0]
+        self._isolated_features = np.zeros_like(self._mean).astype(bool)
+        for component in self.components:
+            if self._is_isolated(component):
+                self._isolated_features = np.logical_or(self._isolated_features, component.features)
+
+
+    def _is_isolated(self, component):
+        return self.graph.in_degree(component) == 0 and (component.confounding or \
+                sum(component.features) == 1)
 
 
     def _check_validity(self):
@@ -161,7 +132,7 @@ class CausalChainGraph:
         return order, predecessors
 
 
-    def interventional_distribution(self, S, x, nsamples=1, in_place=False):
+    def interventional_distribution(self, S, x, nsamples=1, in_place=False, const_features=[]):
         """Draw samples from the interventional distribution P(X_S' | do(X_S=x_S))
         Mutates the input x to reflect the intervened values
 
@@ -175,92 +146,51 @@ class CausalChainGraph:
             Number of samples to draw. If in_place, uses x.shape[0] as the number of samples
         in_place : bool (default=False)
             Whether to mutate the input x or return a new array
+        const_features : list (default=[])
+            List of features known to be constant and therefore not to be sampled or conditioned on
         """
+
+        # Features which never vary and have no causal interactions with other features can 
+        # be samples directly from the background dataset and should not be conditioned on
+        # if const_features == []:
+        #     const_features = [0 for _ in range(len(self._mean))]
+        # self._background_features = (np.array(const_features) * np.array(self._isolated_features)).astype(bool) 
 
         if not in_place:
             x = np.repeat(x.reshape(1, -1), nsamples, axis=0)
         else:
             nsamples = x.shape[0]
 
-        T = np.logical_xor(self._vars, S)
+        Sbar = np.logical_xor(self._vars, S)
 
         # Traverse nodes in topological (causal) order
         for i in range(nsamples):
             for node in self.order:
-                dist = (self._confounding_distribution(node, self._parents[node], S, x[i:i+1,:]) if node.confounding 
-                        else self._non_confounding_distribution(node, self._parents[node], S, x[i:i+1,:]))
-                
-                # Check if the distribution is undefined (i.e. the node's features are all in S, so are predefined)
-                if dist is None:
+                T = node.features * Sbar
+                # If the node's features are all in S, the distribution is pre-specified by the intervention
+                if not T.any():
                     continue
-                mu, Sigma = dist
 
-                # Sample from the distribution and update x with the sampled features
-                
-                x[i:i+1,T*node.features] = np.random.multivariate_normal(mu, Sigma)
+                parents = self._parents[node]
+                condition_on = parents 
+                if not node.confounding:
+                    condition_on = condition_on + (node.features * S) 
+
+                # If the node is isolated, there is nothing to condition on. Sample from the background distribution
+                if not condition_on.any():
+                    x[i:i+1,Sbar*node.features] = self.dataset[np.random.choice(self.dataset.shape[0], 1), :][:, Sbar*node.features]
+                else:
+                    # Sample from the distribution and update x with the sampled features                
+                    mu, Sigma = self.conditional_distribution(condition_on, T, x[i:i+1,:])
+                    x[i:i+1,Sbar*node.features] = np.random.multivariate_normal(mu, Sigma)
+
+        # Sample isolated features from the background distribution
+        # Constant features are already set to their appropriate value
+        # x[:, self._background_features] = self.dataset[np.random.choice(self.dataset.shape[0], nsamples), :][:, self._background_features]
+
         return x
 
 
-
-    def _confounding_distribution(self, node, parents, S, x):
-        """Generate the parameters of the multivariate normal distribution
-        P(X_{node intersect S'} | X_{parents intersect S}, X_{parents intersect S'})
-        where node is part of a confounded component
-
-        Parameters
-        ----------
-        node : ChainComponent
-            Node in the causal chain graph
-        parents : np.ndarray[bool]
-            Set of parents of the node
-        S : np.ndarray[bool]
-            Set of intervened features
-        x : np.array    
-            Values of the features conditioned on
-        """
-        Sbar = np.logical_xor(self._vars, S)
-        T = node.features * Sbar
-
-        # If the node's features are all in S, the distribution is pre-specified by the intervention
-        if not T.any():
-            return None
-
-        # If the node has no parents, the distribution is simply the marginal distribution
-        if not parents.any():
-            mu = self._mean[T]
-            Sigma = self._cov[T][:, T]
-            return mu, Sigma
-        
-        mu, Sigma = self.conditional_distribution(parents, T, x)
-        return mu, Sigma
-
-
-    def _non_confounding_distribution(self, node, parents, S, x):
-        """Generate the parameters of the multivariate normal distribution
-        P(X_{node intersect S'} | X_{parents intersect S}, X_{parents intersect S'}, x_{node intersect S})
-        where node is part of a non-confounded component
-
-        Parameters
-        ----------
-        node : ChainComponent
-            Node in the causal chain graph
-        parents : np.ndarray[bool]
-            Set of parents of the node
-        S : np.ndarray[bool]
-            Set of intervened features
-        x : np.array    
-            Values of the features conditioned on
-        """
-        Sbar = np.logical_xor(self._vars, S)
-        T = node.features * Sbar
-        if not T.any():
-            return None
-        
-        tau_S = node.features * S
-
-        mu, Sigma = self.conditional_distribution(np.logical_or(parents, tau_S), T, x)
-        return mu, Sigma
-    
 
     def conditional_distribution(self, S, T, x):
         """Generates the parameters of the conditional distribution P(X_T | X_S=x_S)
@@ -281,8 +211,13 @@ class CausalChainGraph:
         cov_TS = self._cov[T][:, S]
         cov_TT = self._cov[T][:, T]
 
-        mu_T_given_S = mu_T + (cov_TS @ np.linalg.inv(cov_SS) @ ((x_S - mu_S).reshape(-1, 1))).reshape(-1)
-        cov_T_given_S = cov_TT - cov_TS @ np.linalg.inv(cov_SS) @ cov_TS.T
+        lu, piv = lu_factor(cov_SS)
+        cov_SS_inv_cov_TS_T = lu_solve((lu, piv), cov_TS.T) # cov_SS^-1 cov_TS^T
+        cov_SS_inv_mean_diff = lu_solve((lu, piv), (x_S - mu_S).T) # cov_SS^-1 (x_S - mu_S)
+
+
+        mu_T_given_S = mu_T + (cov_TS @ cov_SS_inv_mean_diff).reshape(-1)
+        cov_T_given_S = cov_TT - cov_TS @ cov_SS_inv_cov_TS_T
 
         return mu_T_given_S, cov_T_given_S
     
