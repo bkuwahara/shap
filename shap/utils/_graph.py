@@ -48,12 +48,12 @@ class ChainComponent:
     confounding : bool (default=False)
         Whether the features in the component are confounded by unobserved variables
     """
-    def from_set(features, M, confounding=False, name=None):
+    def from_set(features, M, confounding=False, name=None, sample_method = "gaussian"):
         S = np.array([1 if f in features else 0 for f in range(M)]).astype(bool)
         return ChainComponent(S, confounding=confounding, name=name)
 
 
-    def from_feature_name_list(names_to_include, names_list, confounding=False, group_name=None):
+    def from_feature_name_list(names_to_include, names_list, confounding=False, group_name=None, sample_method = "gaussian"):
         features = np.zeros(len(names_list)).astype(bool)
         for i in range(len(names_list)):
             for name_to_include in names_to_include:
@@ -62,12 +62,13 @@ class ChainComponent:
         return ChainComponent(features, confounding=confounding, name=group_name)
     
 
-    def __init__(self, features, confounding=False, name=None):
+    def __init__(self, features, confounding=False, name=None, sample_method = "gaussian"):
         self.features = features
         self.confounding = confounding
         self.name = name
         if self.name is None:
             self.name = (i for i in range(len(features)) if features[i])
+        self.sample_method = sample_method
 
     def __hash__(self) -> int:
         return hash(self.name)
@@ -192,10 +193,15 @@ class CausalChainGraph:
                 if not condition_on.any():
                     x[i:i+1,Sbar*node.features] = self.dataset[np.random.choice(self.dataset.shape[0], 1), :][:, Sbar*node.features]
                 else:
-                    # Sample from the distribution and update x with the sampled features                
-                    mu, Sigma = self.conditional_distribution(condition_on, T, x[i:i+1,:])
-                    x[i:i+1,Sbar*node.features] = np.random.multivariate_normal(mu, Sigma)
-
+                    # Sample from the distribution and update x with the sampled features   
+                    if node.sample_method == "gaussian":     
+                        x[i:i+1,Sbar*node.features] = self.gaussian_conditional_distribution(condition_on, T, x[i:i+1,:])
+                    elif node.sample_method == "max":
+                        x[i:i+1,Sbar*node.features] = self.max_condition_distribution(condition_on, T, x[i:i+1,:])
+                    elif node.sample_method == "min":
+                        x[i:i+1,Sbar*node.features] = self.min_condition_distribution(condition_on, T, x[i:i+1,:])
+                    else:
+                        raise ValueError("Invalid sample method")
         # Sample isolated features from the background distribution
         # Constant features are already set to their appropriate value
         # x[:, self._background_features] = self.dataset[np.random.choice(self.dataset.shape[0], nsamples), :][:, self._background_features]
@@ -204,7 +210,7 @@ class CausalChainGraph:
 
 
 
-    def conditional_distribution(self, S, T, x):
+    def gaussian_conditional_distribution(self, S, T, x):
         """Generates the parameters of the conditional distribution P(X_T | X_S=x_S)
 
         Parameters
@@ -231,8 +237,26 @@ class CausalChainGraph:
         mu_T_given_S = mu_T + (cov_TS @ cov_SS_inv_mean_diff).reshape(-1)
         cov_T_given_S = cov_TT - cov_TS @ cov_SS_inv_cov_TS_T
 
-        return mu_T_given_S, cov_T_given_S
+
+        return np.random.multivariate_normal(mu_T_given_S, cov_T_given_S)
+        
+
+    def max_condition_distribution(self, S, T, x):
+        """
+        Sample features in T conditioned from rows in dataset where S is at least x_S
+        """
+        valid_samples = np.where(self.dataset[:, S] >= x[S])
+        return valid_samples[np.random.choice(valid_samples.shape[0]), T]
     
+
+    def min_condition_distribution(self, S, T, x):
+        """
+        Sample features in T conditioned from rows in dataset where S is at most x_S
+        """
+        valid_samples = np.where(self.dataset[:, S] <= x[S])
+        return valid_samples[np.random.choice(valid_samples.shape[0]), T]
+
+
 
     def save(self, filename):
         """Save the graph to a file

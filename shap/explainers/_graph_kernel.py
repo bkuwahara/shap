@@ -122,11 +122,6 @@ class GraphKernelExplainer(Explainer):
             emsg = "Shap explainer does not support transposed DenseData or SparseData currently."
             raise DimensionError(emsg)
 
-        # warn users about large background data sets
-        if len(self.data.weights) > 100:
-            log.warning("Using " + str(len(self.data.weights)) + " background data samples could cause " +
-                        "slower run times. Consider using shap.sample(data, K) or shap.kmeans(data, K) to " +
-                        "summarize the background as K samples.")
 
         # init our parameters
         self.N = self.data.data.shape[0]
@@ -151,8 +146,9 @@ class GraphKernelExplainer(Explainer):
 
 
     def __call__(self, X, **kwargs):
+        profiler = cProfile.Profile()
+        profiler.enable()
 
-        start_time = time.time()       
         feature_names = getattr(self, "data_feature_names", None)
 
         v = self.shap_values(X, **kwargs)
@@ -165,12 +161,18 @@ class GraphKernelExplainer(Explainer):
         else:
             ev_tiled = np.tile(self.expected_value, v.shape[0])
 
+        profiler.disable()
+        s = io.StringIO()
+        sortby = 'cumulative'
+        ps = pstats.Stats(profiler, stream=s).sort_stats(sortby)
+        ps.print_stats()
+        print(s.getvalue())
+
         return Explanation(
             v,
             base_values=ev_tiled,
             data=X,
             feature_names=feature_names,
-            compute_time=time.time() - start_time,
         )
 
     def shap_values(self, X, **kwargs):
@@ -281,6 +283,7 @@ class GraphKernelExplainer(Explainer):
 
     def explain(self, incoming_instance, **kwargs):
 
+       
         # convert incoming input to a standardized iml object
         instance = convert_to_instance(incoming_instance)
         match_instance_to_data(instance, self.data)
@@ -448,6 +451,9 @@ class GraphKernelExplainer(Explainer):
         if not self.vector_out:
             phi = np.squeeze(phi, axis=1)
             phi_var = np.squeeze(phi_var, axis=1)
+
+        
+
 
         return phi
 
