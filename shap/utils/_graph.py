@@ -129,11 +129,11 @@ class CausalChainGraph:
 
         self.dataset = dataset
         self.components = components
+        self.M = dataset.shape[1]
 
         self.dependence_model = dependence_model
         if self.dependence_model not in ["gaussian", "copula"]:
             raise ValueError("Dependence model must be either ''gaussian'' or ''copula''")
-        self._generate_statistics(self.dependence_model)
         self._check_validity()
 
         self.graph = nx.DiGraph()
@@ -145,10 +145,12 @@ class CausalChainGraph:
         self._vars = np.ones(dataset.shape[1]).astype(bool)
 
         self.order, self._parents = self._generate_traversal_order()
-        self._isolated_features = np.zeros_like(self._mean).astype(bool)
+        self._isolated_features = np.zeros(self.M).astype(bool)
         for component in self.components:
             if self._is_isolated(component):
                 self._isolated_features = np.logical_or(self._isolated_features, component.features)
+
+        self._generate_statistics(self.dependence_model)
 
         
     def _is_isolated(self, component):
@@ -157,7 +159,7 @@ class CausalChainGraph:
 
 
     def _check_validity(self):
-        covered = np.zeros_like(self._mean).astype(bool)
+        covered = np.zeros(self.M).astype(bool)
         for component in self.components:
             if (covered * (component.features)).any():
                 raise ValueError("Components must be disjoint")
@@ -185,11 +187,17 @@ class CausalChainGraph:
                 self._inv_cdfs = []
                 self._cdfs = []
                 normalized_data = np.empty_like(self.dataset)
-                for i in range(self.dataset.shape[1]):
-                    ecdf_vals, ecdf_func, inv_cdf = self._get_ecdf(self.dataset[:,i])
-                    normalized_data[:,i] = norm.ppf(ecdf_vals)
-                    self._inv_cdfs.append(inv_cdf)
-                    self._cdfs.append(ecdf_func)
+                for i in range(self.M):
+                    # No need to transform features that are never conditioned on or sampled
+                    if self._isolated_features[i]:
+                        normalized_data[:,i] = self.dataset[:,i]
+                        self._inv_cdfs.append(lambda x: x)
+                        self._cdfs.append(lambda x: x)
+                    else:
+                        ecdf_vals, ecdf_func, inv_cdf = self._get_ecdf(self.dataset[:,i])
+                        normalized_data[:,i] = norm.ppf(ecdf_vals)
+                        self._inv_cdfs.append(inv_cdf)
+                        self._cdfs.append(ecdf_func)
 
                 self._mean = np.nanmean(normalized_data, axis=0)
                 self._cov = nan_cov(normalized_data)
