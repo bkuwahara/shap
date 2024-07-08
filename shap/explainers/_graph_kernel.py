@@ -86,6 +86,10 @@ class GraphKernelExplainer(Explainer):
         the explainer will use this graph to perform interventional distribution shifts to the
         synthetic samples. If None, assume full feature independence.
 
+    dependence_model: str (default='gaussian')
+        Method to model dependence between variables. 
+        'gaussian' assumes multivariate Gaussian distribution. 'copula' models a Gaussian copula.
+
     link : "identity" or "logit"
         A generalized linear model link to connect the feature importance values to the model
         output. Since the feature importance values, phi, sum up to the model output, it often makes
@@ -100,12 +104,12 @@ class GraphKernelExplainer(Explainer):
 
     """
 
-    def __init__(self, model, data, components, edges, feature_names=None, link="identity",  **kwargs):
+    def __init__(self, model, data, components, edges, feature_names=None, dependence_model = 'gaussian', link="identity",  **kwargs):
 
         if feature_names is not None:
             self.data_feature_names=feature_names
 
-        causal_graph = CausalChainGraph(components, edges, data)
+        causal_graph = CausalChainGraph(components, edges, data, dependence_model=dependence_model)
 
         # convert incoming inputs to standardized iml objects
         self.link = convert_to_link(link)
@@ -146,8 +150,6 @@ class GraphKernelExplainer(Explainer):
 
 
     def __call__(self, X, **kwargs):
-        profiler = cProfile.Profile()
-        profiler.enable()
 
         feature_names = getattr(self, "data_feature_names", None)
 
@@ -160,13 +162,7 @@ class GraphKernelExplainer(Explainer):
             ev_tiled = np.tile(self.expected_value, (v.shape[0],1))
         else:
             ev_tiled = np.tile(self.expected_value, v.shape[0])
-
-        profiler.disable()
-        s = io.StringIO()
-        sortby = 'cumulative'
-        ps = pstats.Stats(profiler, stream=s).sort_stats(sortby)
-        ps.print_stats()
-        print(s.getvalue())
+            
 
         return Explanation(
             v,

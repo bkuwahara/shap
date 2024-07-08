@@ -1,6 +1,8 @@
 import networkx as nx
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
+from scipy.stats import norm
+from scipy.interpolate import UnivariateSpline
 
 def nan_cov(mat):
     """
@@ -37,6 +39,26 @@ def nan_cov(mat):
     return cov_matrix
 
 
+class ECDF:
+
+    def __init__(self, interp, xmin, xmax, ymin, ymax):
+        self.interp = interp
+        self.xmin = xmin
+        self.xmax = xmax
+        self.ymin = ymin
+        self.ymax = ymax
+    
+    def __call__(self, x):
+        if isinstance(x, np.ndarray):
+            out = np.where(x <= self.xmin, self.ymin, np.where(x >= self.xmax, self.ymax, self.interp(x)))
+            return out
+        else:
+            if x <= self.xmin:
+                return self.ymin
+            if x >= self.xmax:
+                return self.ymax
+            return self.interp(x)
+
 
 class ChainComponent:
     """Class representing a component in a causal chain graph
@@ -47,13 +69,16 @@ class ChainComponent:
         Set of features in the component
     confounding : bool (default=False)
         Whether the features in the component are confounded by unobserved variables
+    sample_method: str (default='auto')
+        How to sample dependent on other features
+        Options are 'max', 'min' and 'auto'. auto option uses the method specified in the chain graph.
     """
-    def from_set(features, M, confounding=False, name=None, sample_method = "gaussian"):
+    def from_set(features, M, confounding=False, name=None, sample_method = "auto"):
         S = np.array([1 if f in features else 0 for f in range(M)]).astype(bool)
         return ChainComponent(S, confounding=confounding, name=name)
 
 
-    def from_feature_name_list(names_to_include, names_list, confounding=False, group_name=None, sample_method = "gaussian"):
+    def from_feature_name_list(names_to_include, names_list, confounding=False, group_name=None, sample_method = "auto"):
         features = np.zeros(len(names_list)).astype(bool)
         for i in range(len(names_list)):
             for name_to_include in names_to_include:
@@ -62,7 +87,7 @@ class ChainComponent:
         return ChainComponent(features, confounding=confounding, name=group_name)
     
 
-    def __init__(self, features, confounding=False, name=None, sample_method = "gaussian"):
+    def __init__(self, features, confounding=False, name=None, sample_method = "auto"):
         self.features = features
         self.confounding = confounding
         self.name = name
@@ -94,17 +119,23 @@ class CausalChainGraph:
         component x to component y indicates that x causally precedes y
     dataset : np.array
         Background dataset to represent distribution used to generate interventional samples
+    dependence_model: str (default='gaussian')
+        Method to model dependence between variables. 
+        'gaussian' assumes multivariate Gaussian distribution. 'copula' models a Gaussian copula.
     """
 
     
-    def __init__(self, components, edges, dataset):       
+    def __init__(self, components, edges, dataset, dependence_model="gaussian"):       
 
         self.dataset = dataset
-        self._mean = np.nanmean(dataset, axis=0)
-        self._cov = np.cov(dataset, rowvar=False)
         self.components = components
 
+        self.dependence_model = dependence_model
+        if self.dependence_model not in ["gaussian", "copula"]:
+            raise ValueError("Dependence model must be either ''gaussian'' or ''copula''")
+        self._generate_statistics(self.dependence_model)
         self._check_validity()
+
         self.graph = nx.DiGraph()
         self.graph.add_nodes_from(components)
         self.graph.add_edges_from(edges)
@@ -119,7 +150,7 @@ class CausalChainGraph:
             if self._is_isolated(component):
                 self._isolated_features = np.logical_or(self._isolated_features, component.features)
 
-
+        
     def _is_isolated(self, component):
         return self.graph.in_degree(component) == 0 and (component.confounding or \
                 sum(component.features) == 1)
@@ -143,6 +174,47 @@ class CausalChainGraph:
             predecessors[node] = parent_set
             order.append(node)
         return order, predecessors
+    
+
+    def _generate_statistics(self, method):
+        match method:
+            case "gaussian":
+                self._mean = np.nanmean(self.dataset, axis=0)
+                self._cov = nan_cov(self.dataset)
+            case "copula":
+                self._inv_cdfs = []
+                self._cdfs = []
+                normalized_data = np.empty_like(self.dataset)
+                for i in range(self.dataset.shape[1]):
+                    ecdf_vals, ecdf_func, inv_cdf = self._get_ecdf(self.dataset[:,i])
+                    normalized_data[:,i] = norm.ppf(ecdf_vals)
+                    self._inv_cdfs.append(inv_cdf)
+                    self._cdfs.append(ecdf_func)
+
+                self._mean = np.nanmean(normalized_data, axis=0)
+                self._cov = nan_cov(normalized_data)
+            case _:
+                raise ValueError("Invalid dependence model")
+
+
+    def _get_ecdf(self, X):
+        n_vals = (~np.isnan(X)).sum()
+        n_nan = len(X) - n_vals
+        ecdf_vals = np.concatenate([np.arange(1, n_vals+1)/(n_vals+0.01), np.repeat(np.nan, n_nan)]) 
+        order = np.argsort(X)
+        output = X.copy()
+        output[order] = ecdf_vals
+        X_sorted = X[order]
+
+        ecdf_nonan = ecdf_vals[~np.isnan(ecdf_vals)]
+        X_sorted_nonan = X_sorted[~np.isnan(ecdf_vals)]
+
+        ecdf_func = UnivariateSpline(X_sorted_nonan, ecdf_nonan)
+        clipped_ecdf = ECDF(ecdf_func, X_sorted_nonan[0], X_sorted_nonan[-1], ecdf_nonan[0]/2, (1+ecdf_nonan[-1])/2)
+
+        inv_ecdf = UnivariateSpline(ecdf_nonan, X_sorted_nonan)
+
+        return output, clipped_ecdf, inv_ecdf
 
 
     def interventional_distribution(self, S, x, nsamples=1, in_place=False, const_features=[]):
@@ -162,7 +234,7 @@ class CausalChainGraph:
         const_features : list (default=[])
             List of features known to be constant and therefore not to be sampled or conditioned on
         """
-
+        
         # Features which never vary and have no causal interactions with other features can 
         # be samples directly from the background dataset and should not be conditioned on
         # if const_features == []:
@@ -173,8 +245,15 @@ class CausalChainGraph:
             x = np.repeat(x.reshape(1, -1), nsamples, axis=0)
         else:
             nsamples = x.shape[0]
-
         Sbar = np.logical_xor(self._vars, S)
+
+        # Transform features into the copula space if using a Gaussian copula
+        if self.dependence_model == 'copula':
+            for j, feature_idx in enumerate(S):
+                # Skip features that won't be conditioned on
+                if not feature_idx or self._isolated_features[j]:
+                    continue
+                x[:,j] = norm.ppf(self._cdfs[j](x[:,j]))
 
         # Traverse nodes in topological (causal) order
         for i in range(nsamples):
@@ -194,23 +273,32 @@ class CausalChainGraph:
                     x[i:i+1,Sbar*node.features] = self.dataset[np.random.choice(self.dataset.shape[0], 1), :][:, Sbar*node.features]
                 else:
                     # Sample from the distribution and update x with the sampled features   
-                    if node.sample_method == "gaussian":     
-                        x[i:i+1,Sbar*node.features] = self.gaussian_conditional_distribution(condition_on, T, x[i:i+1,:])
+                    if node.sample_method == "auto":
+                        x[i:i+1,Sbar*node.features] = self.gaussian_conditional(condition_on, T, x[i:i+1,:])
                     elif node.sample_method == "max":
                         x[i:i+1,Sbar*node.features] = self.max_condition_distribution(condition_on, T, x[i:i+1,:])
                     elif node.sample_method == "min":
                         x[i:i+1,Sbar*node.features] = self.min_condition_distribution(condition_on, T, x[i:i+1,:])
                     else:
                         raise ValueError("Invalid sample method")
+                    
         # Sample isolated features from the background distribution
         # Constant features are already set to their appropriate value
         # x[:, self._background_features] = self.dataset[np.random.choice(self.dataset.shape[0], nsamples), :][:, self._background_features]
+
+        # transform back into original feature space if sampled from Gaussian copula
+        if self.dependence_model == 'copula':
+            for j, feature_idx in enumerate(Sbar):
+                # Skip features that were intetrvened on
+                if not feature_idx or self._isolated_features[j]:
+                    continue
+                x[:,feature_idx] = self._inv_cdfs[j](norm.cdf(x[:,feature_idx]))
 
         return x
 
 
 
-    def gaussian_conditional_distribution(self, S, T, x):
+    def gaussian_conditional(self, S, T, x):
         """Generates the parameters of the conditional distribution P(X_T | X_S=x_S)
 
         Parameters
@@ -255,7 +343,6 @@ class CausalChainGraph:
         """
         valid_samples = np.where(self.dataset[:, S] <= x[S])
         return valid_samples[np.random.choice(valid_samples.shape[0]), T]
-
 
 
     def save(self, filename):
