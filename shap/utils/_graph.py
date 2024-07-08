@@ -170,7 +170,7 @@ class CausalChainGraph:
         order = []
         predecessors = {}
         for node in nx.topological_sort(self.graph):
-            parent_set = np.zeros_like(self._mean).astype(bool)
+            parent_set = np.zeros(self.M).astype(bool)
             for parent in self.graph.predecessors(node):
                 parent_set = np.logical_or(parent_set, parent.features)
             predecessors[node] = parent_set
