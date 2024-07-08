@@ -212,7 +212,7 @@ class CausalChainGraph:
         ecdf_func = UnivariateSpline(X_sorted_nonan, ecdf_nonan, s=0)
         clipped_ecdf = ECDF(ecdf_func, X_sorted_nonan[0], X_sorted_nonan[-1], ecdf_nonan[0]/2, (1+ecdf_nonan[-1])/2)
 
-        inv_ecdf = UnivariateSpline(ecdf_nonan, X_sorted_nonan)
+        inv_ecdf = UnivariateSpline(ecdf_nonan, X_sorted_nonan, s=0)
 
         return output, clipped_ecdf, inv_ecdf
 
